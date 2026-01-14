@@ -2,7 +2,7 @@
 #![no_main]
 use core::panic::PanicInfo;
 use serenelib::debug_writer::{_print, DebugWriter};
-use serenelib::syscalls::{sys_cap_port_grant, sys_exit};
+use serenelib::syscalls::{sys_cap_port_grant, sys_exit, sys_cap_ipc_discovery, sys_endpoint_send};
 use serenelib::{print, println};
 use x86_64::instructions::port::Port;
 
@@ -139,6 +139,8 @@ pub extern "C" fn _start() -> ! {
     sys_cap_port_grant(0xcfc, 4).expect("sys_cap_port_grant failed");
     println!("Hello world!");
     pci_scan();
+    let handle = sys_cap_ipc_discovery().expect("sys_cap_ipc_discovery failed");
+    sys_endpoint_send(handle, "Hello, world!".as_bytes());
     sys_exit(0);
 }
 
