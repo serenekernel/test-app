@@ -32,8 +32,9 @@ checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 [[package]]
 name = "serenelib"
 version = "0.1.0"
-source = "git+https://github.com/serenekernel/serenelib.git#53fc35504d9783af19ce67f35ffd3e9e3ec2f67b"
+source = "git+https://github.com/serenekernel/serenelib.git#185db1bfea3e91b48a09e321c7038044aa3fa511"
 dependencies = [
+ "bitflags",
  "lazy_static",
  "spin 0.5.2",
  "x86_64",
