@@ -140,12 +140,14 @@ pub extern "C" fn _start() -> ! {
     println!("Hello world!");
     pci_scan();
     let handle = sys_cap_ipc_discovery().expect("sys_cap_ipc_discovery failed");
-    sys_endpoint_send(handle, "Hello, world!".as_bytes());
+    sys_endpoint_send(handle, "Hello, world!".as_bytes()).expect("sys_endpoint_send failed");
     sys_exit(0);
 }
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    println!("panic: {}", info);
+    println!("panic: {}", info.message());
+    println!("at {:?}", info.location());
+    
     sys_exit(1);
 }
