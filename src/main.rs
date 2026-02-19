@@ -2,7 +2,8 @@
 #![no_main]
 use core::panic::PanicInfo;
 use serenelib::debug_writer::{_print, DebugWriter};
-use serenelib::syscalls::{sys_cap_port_grant, sys_exit, sys_cap_ipc_discovery, sys_endpoint_send};
+use serenelib::ipc::Handle;
+use serenelib::syscalls::{sys_cap_ipc_discovery, sys_cap_port_grant, sys_endpoint_create, sys_endpoint_free_message, sys_endpoint_receive, sys_endpoint_send, sys_exit, sys_wait_for};
 use serenelib::{print, println};
 use x86_64::instructions::port::Port;
 
@@ -132,6 +133,38 @@ fn pci_scan() {
     }
 }
 
+#[repr(C)]
+struct IPC_Init_Discover {
+    pub _type: u8,
+    pub name: [u8; 32]
+}
+
+#[repr(C)]
+struct IPC_Init_DiscoverResponse {
+    pub _type: u8,
+    pub handle: Handle
+}
+
+#[repr(C)]
+struct IPC_VFS_List_Dir_Request {
+    pub _type: u8,
+    pub path: [u8; 4096]
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct IPC_VFS_List_Dir_Response_Entry {
+    pub name: [u8; 256],
+    pub flags: u8,
+}
+
+#[repr(C)]
+struct IPC_VFS_List_Dir_Response {
+    pub _type: u8,
+    pub entry_count: u64,
+    // pub entries: [IPC_VFS_List_Dir_Response_Entry],
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
     sys_cap_port_grant(0xe9, 1).expect("sys_cap_port_grant failed");
@@ -139,8 +172,72 @@ pub extern "C" fn _start() -> ! {
     sys_cap_port_grant(0xcfc, 4).expect("sys_cap_port_grant failed");
     println!("Hello world!");
     pci_scan();
-    let handle = sys_cap_ipc_discovery().expect("sys_cap_ipc_discovery failed");
-    sys_endpoint_send(handle, "Hello, world!".as_bytes(), &[]).expect("sys_endpoint_send failed");
+    
+
+    let packet = IPC_Init_Discover {
+        _type: 0,
+        name: {
+            let mut name = [0u8; 32];
+            let server_name = b"vfs_server";
+            name[..server_name.len()].copy_from_slice(server_name);
+            name
+        }
+    };
+
+    let init_system_handle = sys_cap_ipc_discovery().expect("sys_cap_ipc_discovery failed");
+    let endpoint = sys_endpoint_create().expect("sys_endpoint_create failed");
+
+    let buf: &[u8; core::mem::size_of::<IPC_Init_Discover>()] = unsafe { core::mem::transmute(&packet) };
+    sys_endpoint_send(init_system_handle, buf, endpoint).expect("sys_endpoint_send failed");
+
+    sys_wait_for(endpoint).expect("sys_wait_for failed");
+    let (message_ptr, _total_size) = sys_endpoint_receive(endpoint).expect("sys_endpoint_receive failed");
+
+    unsafe {
+        let message= &*message_ptr;
+        println!("test_app: received message {:?}", message.payload());
+        let payload = message.payload();
+        if (message.length as usize) < core::mem::size_of::<IPC_Init_DiscoverResponse>() {
+            println!("test_app: invalid discover response size");   
+        }
+        let response: &IPC_Init_DiscoverResponse = core::mem::transmute(payload.as_ptr());
+        println!("test_app: received handle {:?}", response.handle);    
+        
+        let list_dir_request = IPC_VFS_List_Dir_Request {
+            _type: 1,
+            path: {
+                let mut path = [0u8; 4096];
+                let dir_path = b"/";
+                path[..dir_path.len()].copy_from_slice(dir_path);
+                path
+            }
+        };
+
+        let buf: &[u8; core::mem::size_of::<IPC_VFS_List_Dir_Request>()] = unsafe { core::mem::transmute(&list_dir_request) };
+        sys_endpoint_send(response.handle, buf, endpoint).expect("sys_endpoint_send failed");
+        sys_wait_for(endpoint).expect("sys_wait_for failed");
+        let (message_ptr, _total_size) = sys_endpoint_receive(endpoint).expect("sys_endpoint_receive failed");
+        let message= &*message_ptr;
+        let payload = message.payload();
+        println!("test_app: received message with payload {:?}", payload);
+
+        if payload[0] == 1 {
+            let response: &IPC_VFS_List_Dir_Response = unsafe { core::mem::transmute(payload.as_ptr()) };
+            println!("test_app: received list dir response with {} entries", response.entry_count);
+            for i in 0..response.entry_count {
+                let entry_ptr = unsafe { payload.as_ptr().add(core::mem::size_of::<IPC_VFS_List_Dir_Response>() + (i as usize) * core::mem::size_of::<IPC_VFS_List_Dir_Response_Entry>()) };
+                let entry: &IPC_VFS_List_Dir_Response_Entry = unsafe { core::mem::transmute(entry_ptr) };
+                let name_str = core::str::from_utf8(&entry.name).unwrap_or("");
+                println!("test_app: entry {}: name='{}', flags={}", i, name_str, entry.flags);
+            }
+        } else {
+            println!("test_app: received unknown response type {}", payload[0]);
+        }
+
+        sys_endpoint_free_message(message_ptr).expect("sys_endpoint_free_message failed");
+    }
+
+
     sys_exit(0);
 }
 
