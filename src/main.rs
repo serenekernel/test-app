@@ -1,8 +1,10 @@
 #![no_std]
 #![no_main]
+extern crate alloc;
+
 use core::panic::PanicInfo;
-use serenelib::debug_writer::{_print, DebugWriter};
-use serenelib::ipc::Handle;
+use serenelib::debug_writer::{_print};
+use serenelib::ipc::{Handle, IpcArray, IpcBytes, IpcPayloadBuilder, IpcPayloadReader};
 use serenelib::syscalls::{sys_cap_ipc_discovery, sys_cap_port_grant, sys_endpoint_create, sys_endpoint_free_message, sys_endpoint_receive, sys_endpoint_send, sys_exit, sys_wait_for};
 use serenelib::{print, println};
 use x86_64::instructions::port::Port;
@@ -136,7 +138,8 @@ fn pci_scan() {
 #[repr(C)]
 struct IPC_Init_Discover {
     pub _type: u8,
-    pub name: [u8; 32]
+    pub _pad: [u8; 7],
+    pub name: IpcBytes,
 }
 
 #[repr(C)]
@@ -148,21 +151,23 @@ struct IPC_Init_DiscoverResponse {
 #[repr(C)]
 struct IPC_VFS_List_Dir_Request {
     pub _type: u8,
-    pub path: [u8; 4096]
+    pub _pad: [u8; 7],
+    pub path: IpcBytes,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct IPC_VFS_List_Dir_Response_Entry {
-    pub name: [u8; 256],
+    pub name: IpcBytes,
     pub flags: u8,
+    pub _pad: [u8; 3],
 }
 
 #[repr(C)]
 struct IPC_VFS_List_Dir_Response {
     pub _type: u8,
-    pub entry_count: u64,
-    // pub entries: [IPC_VFS_List_Dir_Response_Entry],
+    pub _pad: [u8; 7],
+    pub entries: IpcArray,
 }
 
 #[unsafe(no_mangle)]
@@ -174,21 +179,24 @@ pub extern "C" fn _start() -> ! {
     pci_scan();
     
 
+    let mut discover_builder = IpcPayloadBuilder::with_fixed_size(core::mem::size_of::<IPC_Init_Discover>());
+    let discover_name = discover_builder
+        .push_bytes(b"vfs_server")
+        .expect("failed to append discover server name");
     let packet = IPC_Init_Discover {
         _type: 0,
-        name: {
-            let mut name = [0u8; 32];
-            let server_name = b"vfs_server";
-            name[..server_name.len()].copy_from_slice(server_name);
-            name
-        }
+        _pad: [0; 7],
+        name: discover_name,
     };
 
     let init_system_handle = sys_cap_ipc_discovery().expect("sys_cap_ipc_discovery failed");
     let endpoint = sys_endpoint_create().expect("sys_endpoint_create failed");
 
-    let buf: &[u8; core::mem::size_of::<IPC_Init_Discover>()] = unsafe { core::mem::transmute(&packet) };
-    sys_endpoint_send(init_system_handle, buf, endpoint).expect("sys_endpoint_send failed");
+    discover_builder
+        .write_struct(0, &packet)
+        .expect("failed to write discover request");
+    let discover_payload = discover_builder.finish();
+    sys_endpoint_send(init_system_handle, discover_payload.as_slice(), endpoint).expect("sys_endpoint_send failed");
 
     sys_wait_for(endpoint).expect("sys_wait_for failed");
     let (message_ptr, _total_size) = sys_endpoint_receive(endpoint).expect("sys_endpoint_receive failed");
@@ -200,21 +208,25 @@ pub extern "C" fn _start() -> ! {
         if (message.length as usize) < core::mem::size_of::<IPC_Init_DiscoverResponse>() {
             println!("test_app: invalid discover response size");   
         }
-        let response: &IPC_Init_DiscoverResponse = core::mem::transmute(payload.as_ptr());
+        let reader = IpcPayloadReader::new(payload);
+        let response: &IPC_Init_DiscoverResponse = reader.read_struct(0).expect("invalid discover response header");
         println!("test_app: received handle {:?}", response.handle);    
         
+        let mut list_req_builder = IpcPayloadBuilder::with_fixed_size(core::mem::size_of::<IPC_VFS_List_Dir_Request>());
+        let path = list_req_builder
+            .push_bytes(b"/")
+            .expect("failed to append list dir path");
         let list_dir_request = IPC_VFS_List_Dir_Request {
             _type: 1,
-            path: {
-                let mut path = [0u8; 4096];
-                let dir_path = b"/";
-                path[..dir_path.len()].copy_from_slice(dir_path);
-                path
-            }
+            _pad: [0; 7],
+            path,
         };
 
-        let buf: &[u8; core::mem::size_of::<IPC_VFS_List_Dir_Request>()] = unsafe { core::mem::transmute(&list_dir_request) };
-        sys_endpoint_send(response.handle, buf, endpoint).expect("sys_endpoint_send failed");
+        list_req_builder
+            .write_struct(0, &list_dir_request)
+            .expect("failed to write list dir request");
+        let list_req_payload = list_req_builder.finish();
+        sys_endpoint_send(response.handle, list_req_payload.as_slice(), endpoint).expect("sys_endpoint_send failed");
         sys_wait_for(endpoint).expect("sys_wait_for failed");
         let (message_ptr, _total_size) = sys_endpoint_receive(endpoint).expect("sys_endpoint_receive failed");
         let message= &*message_ptr;
@@ -222,12 +234,15 @@ pub extern "C" fn _start() -> ! {
         println!("test_app: received message with payload {:?}", payload);
 
         if payload[0] == 1 {
-            let response: &IPC_VFS_List_Dir_Response = unsafe { core::mem::transmute(payload.as_ptr()) };
-            println!("test_app: received list dir response with {} entries", response.entry_count);
-            for i in 0..response.entry_count {
-                let entry_ptr = unsafe { payload.as_ptr().add(core::mem::size_of::<IPC_VFS_List_Dir_Response>() + (i as usize) * core::mem::size_of::<IPC_VFS_List_Dir_Response_Entry>()) };
-                let entry: &IPC_VFS_List_Dir_Response_Entry = unsafe { core::mem::transmute(entry_ptr) };
-                let name_str = core::str::from_utf8(&entry.name).unwrap_or("");
+            let reader = IpcPayloadReader::new(payload);
+            let response: &IPC_VFS_List_Dir_Response = reader.read_struct(0).expect("invalid list dir response header");
+            let entries: &[IPC_VFS_List_Dir_Response_Entry] = reader
+                .read_array(response.entries)
+                .expect("invalid list dir response entries");
+            println!("test_app: received list dir response with {} entries", entries.len());
+            for (i, entry) in entries.iter().enumerate() {
+                let name = reader.read_bytes(entry.name).expect("invalid list dir response entry name");
+                let name_str = core::str::from_utf8(name).unwrap_or("");
                 println!("test_app: entry {}: name='{}', flags={}", i, name_str, entry.flags);
             }
         } else {

@@ -10,9 +10,9 @@ checksum = "1e4b40c7323adcfc0a41c4b88143ed58346ff65a288fc144329c5c45e05d70c6"
 
 [[package]]
 name = "bitflags"
-version = "2.10.0"
+version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "812e12b5285cc515a9c72a5c1d3b6d46a19dac5acfef5265968c166106e31dd3"
+checksum = "843867be96c8daad0d758b57df9392b6d8d271134fce549de6ce169ff98a92af"
 
 [[package]]
 name = "lazy_static"
@@ -32,7 +32,7 @@ checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 [[package]]
 name = "serenelib"
 version = "0.1.0"
-source = "git+https://github.com/serenekernel/serenelib.git#f60c54b4eeeb121d13bb684a7339f91b6fb805b3"
+source = "git+https://github.com/serenekernel/serenelib.git#6c90fb945a1f169b7af49f3bf11355b2be643d3b"
 dependencies = [
  "bitflags",
  "lazy_static",
