@@ -1,11 +1,16 @@
 #![no_std]
 #![no_main]
 extern crate alloc;
+use core::arch::global_asm;
+global_asm!(include_str!("start.s"));
+
 
 use core::panic::PanicInfo;
+use alloc::vec::Vec;
+use serenelib::auxv::AuxVType;
 use serenelib::debug_writer::{_print};
 use serenelib::ipc::{Handle, IpcArray, IpcBytes, IpcPayloadBuilder, IpcPayloadReader};
-use serenelib::syscalls::{sys_cap_ipc_discovery, sys_cap_port_grant, sys_endpoint_create, sys_endpoint_free_message, sys_endpoint_receive, sys_endpoint_send, sys_exit, sys_wait_for};
+use serenelib::syscalls::{sys_cap_port_grant, sys_endpoint_create, sys_endpoint_free_message, sys_endpoint_receive, sys_endpoint_send, sys_exit, sys_wait_for};
 use serenelib::{print, println};
 use x86_64::instructions::port::Port;
 
@@ -170,14 +175,101 @@ struct IPC_VFS_List_Dir_Response {
     pub entries: IpcArray,
 }
 
+
 #[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
+pub extern "C" fn _entry(stack: u64) -> ! {
     sys_cap_port_grant(0xe9, 1).expect("sys_cap_port_grant failed");
+    println!("test_app: Starting up...");
+    let stack_ptr = stack as *mut u64;
+
+    let argc = unsafe { *stack_ptr.offset(0) } as usize;
+    println!("test_app: argc = {}", argc);
+
+    let mut argv: Vec<&[u8]> = Vec::with_capacity(argc as usize);
+    let mut envp: Vec<&[u8]> = Vec::new();
+    let mut auxv: Vec<(u64, u64)> = Vec::new();
+
+    for i in 0..argc {
+        let arg_ptr = unsafe { *stack_ptr.offset(1 + i as isize) } as *const u8;
+        let arg_len = unsafe {
+            let mut l = 0;
+            while *arg_ptr.offset(l) != 0 {
+                l += 1;
+            }
+            l as usize
+        };
+        let arg_slice = unsafe { core::slice::from_raw_parts(arg_ptr, arg_len) };
+        argv[i] = arg_slice;
+    }
+
+    let mut envp_offset = 1 + argc + 1;
+
+    // parse envp
+    loop {
+        let env_ptr = unsafe { *stack_ptr.offset(envp_offset as isize) } as *const u8;
+        if env_ptr.is_null() {
+            break;
+        }
+        let env_len = unsafe {
+            let mut l = 0;
+            while *env_ptr.offset(l) != 0 {
+                l += 1;
+            }
+            l as usize
+        };
+        let env_slice = unsafe { core::slice::from_raw_parts(env_ptr, env_len) };
+        envp.push(env_slice);
+        envp_offset += 1;
+    }
+
+    // parse auxv
+    let mut auxv_offset = envp_offset + 1;
+    loop {
+        let aux_type = unsafe { *stack_ptr.offset(auxv_offset as isize) } as u64;
+        if aux_type == 0 {
+            break;
+        }
+        let aux_val = unsafe { *stack_ptr.offset((auxv_offset + 1) as isize) } as u64;
+        auxv.push((aux_type, aux_val));
+        auxv_offset += 2;
+    }
+
+    sys_exit(main(argv, envp, auxv) as usize );
+}
+
+pub fn main(argv: Vec<&[u8]>, envp: Vec<&[u8]>, auxv: Vec<(u64, u64)>) -> i32 {
+    println!("test_app: argv length: {}, envp length: {}, auxv length: {}", argv.len(), envp.len(), auxv.len());
+    for (i, arg) in argv.iter().enumerate() {
+        if let Ok(arg_str) = core::str::from_utf8(arg) {
+            println!("test_app: main arg {}: {}", i, arg_str);
+        } else {
+            println!("test_app: main arg {}: (invalid UTF-8)", i);
+        }
+    }
+
+    for (i, env) in envp.iter().enumerate() {
+        if let Ok(env_str) = core::str::from_utf8(env) {
+            println!("test_app: main env {}: {}", i, env_str);
+        } else {
+            println!("test_app: main env {}: (invalid UTF-8)", i);
+        }
+    }
+
+    let mut init_system_handle: Option<Handle> = None;
+
+    for (ty, val) in auxv {
+        println!("test_app: main auxv: type {}, val {:#x}", ty, val);
+        if ty == AuxVType::AUXV_SERENE_INIT_HANDLE as u64 {
+            init_system_handle = Some(Handle(val));
+        }
+    }
+    
     sys_cap_port_grant(0xcf8, 4).expect("sys_cap_port_grant failed");
     sys_cap_port_grant(0xcfc, 4).expect("sys_cap_port_grant failed");
     println!("Hello world!");
     pci_scan();
-    
+
+    let init_system_handle = init_system_handle.expect("missing AUXV_SERENE_INIT_HANDLE");
 
     let mut discover_builder = IpcPayloadBuilder::with_fixed_size(core::mem::size_of::<IPC_Init_Discover>());
     let discover_name = discover_builder
@@ -189,7 +281,6 @@ pub extern "C" fn _start() -> ! {
         name: discover_name,
     };
 
-    let init_system_handle = sys_cap_ipc_discovery().expect("sys_cap_ipc_discovery failed");
     let endpoint = sys_endpoint_create().expect("sys_endpoint_create failed");
 
     discover_builder
