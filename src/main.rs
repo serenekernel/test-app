@@ -1,8 +1,8 @@
 #![no_std]
 #![no_main]
 extern crate alloc;
-use core::arch::global_asm;
-global_asm!(include_str!("start.s"));
+
+serenelib::serene_entry!(main);
 
 
 use core::panic::PanicInfo;
@@ -176,68 +176,8 @@ struct IPC_VFS_List_Dir_Response {
 }
 
 
-#[unsafe(no_mangle)]
-pub extern "C" fn _entry(stack: u64) -> ! {
-    sys_cap_port_grant(0xe9, 1).expect("sys_cap_port_grant failed");
-    println!("test_app: Starting up...");
-    let stack_ptr = stack as *mut u64;
-
-    let argc = unsafe { *stack_ptr.offset(0) } as usize;
-    println!("test_app: argc = {}", argc);
-
-    let mut argv: Vec<&[u8]> = Vec::with_capacity(argc as usize);
-    let mut envp: Vec<&[u8]> = Vec::new();
-    let mut auxv: Vec<(u64, u64)> = Vec::new();
-
-    for i in 0..argc {
-        let arg_ptr = unsafe { *stack_ptr.offset(1 + i as isize) } as *const u8;
-        let arg_len = unsafe {
-            let mut l = 0;
-            while *arg_ptr.offset(l) != 0 {
-                l += 1;
-            }
-            l as usize
-        };
-        let arg_slice = unsafe { core::slice::from_raw_parts(arg_ptr, arg_len) };
-        argv[i] = arg_slice;
-    }
-
-    let mut envp_offset = 1 + argc + 1;
-
-    // parse envp
-    loop {
-        let env_ptr = unsafe { *stack_ptr.offset(envp_offset as isize) } as *const u8;
-        if env_ptr.is_null() {
-            break;
-        }
-        let env_len = unsafe {
-            let mut l = 0;
-            while *env_ptr.offset(l) != 0 {
-                l += 1;
-            }
-            l as usize
-        };
-        let env_slice = unsafe { core::slice::from_raw_parts(env_ptr, env_len) };
-        envp.push(env_slice);
-        envp_offset += 1;
-    }
-
-    // parse auxv
-    let mut auxv_offset = envp_offset + 1;
-    loop {
-        let aux_type = unsafe { *stack_ptr.offset(auxv_offset as isize) } as u64;
-        if aux_type == 0 {
-            break;
-        }
-        let aux_val = unsafe { *stack_ptr.offset((auxv_offset + 1) as isize) } as u64;
-        auxv.push((aux_type, aux_val));
-        auxv_offset += 2;
-    }
-
-    sys_exit(main(argv, envp, auxv) as usize );
-}
-
 pub fn main(argv: Vec<&[u8]>, envp: Vec<&[u8]>, auxv: Vec<(u64, u64)>) -> i32 {
+    println!("test_app: Starting up...");
     println!("test_app: argv length: {}, envp length: {}, auxv length: {}", argv.len(), envp.len(), auxv.len());
     for (i, arg) in argv.iter().enumerate() {
         if let Ok(arg_str) = core::str::from_utf8(arg) {
